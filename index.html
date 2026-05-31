@@ -832,6 +832,18 @@ function saveLocations() {
   localStorage.setItem('skycast_activeIdx', activeIdx);
 }
 
+// ─── Shared icon resolver — single source of truth for all views ────────────────
+function resolveIcon(prob, code, isDay = true) {
+  if (prob >= 80) return { icon: '🌧', text: 'Heavy rain likely' };
+  if (prob >= 60) return { icon: '🌧', text: 'Rain expected' };
+  if (prob >= 40) return { icon: '🌦', text: 'Showers possible' };
+  if (prob >= 20) {
+    const base = weatherInfo(code, isDay);
+    return [0,1].includes(code) ? { icon: '⛅', text: 'Mainly clear, chance of rain' } : base;
+  }
+  return weatherInfo(code, isDay);
+}
+
 // ─── Weather codes ────────────────────────────────────────────────────────
 function weatherInfo(code, isDay = true) {
   const map = {
@@ -1173,25 +1185,8 @@ function renderTodayView(data, loc) {
   const isDay = H.is_day[ci];
   const rainProb = H.precipitation_probability[ci];
 
-  // Override the main icon & description using probability — same logic as hourly blocks.
-  // The weather code alone reflects only the modelled dominant phenomenon at that hour;
-  // probability captures ensemble spread and is a better headline signal.
-  let wi;
-  if (rainProb >= 80) {
-    wi = { icon: '🌧', text: 'Heavy rain likely' };
-  } else if (rainProb >= 60) {
-    wi = { icon: '🌧', text: 'Rain expected' };
-  } else if (rainProb >= 40) {
-    wi = { icon: '🌦', text: 'Showers likely' };
-  } else if (rainProb >= 20) {
-    const base = weatherInfo(code, isDay);
-    const clearCodes = [0, 1];
-    wi = clearCodes.includes(code)
-      ? { icon: '⛅', text: 'Mainly clear, chance of rain' }
-      : base;
-  } else {
-    wi = weatherInfo(code, isDay);
-  }
+  // Resolve main icon via shared function — single source of truth
+  let wi = resolveIcon(rainProb, code, isDay);
 
   const temp = Math.round(H.temperature_2m[ci]);
   const feels = Math.round(H.apparent_temperature[ci]);
@@ -1295,21 +1290,8 @@ function renderTodayView(data, loc) {
         const dayFlag = H.is_day[i];
         // Override icon if rain probability is meaningfully high,
         // regardless of what the weather code says
-        let hwi;
-        if (prob >= 70) {
-          hwi = { icon: '🌧', text: 'Rain likely' };
-        } else if (prob >= 40) {
-          hwi = { icon: '🌦', text: 'Showers possible' };
-        } else if (prob >= 20) {
-          // Blend: show code but bias toward cloudy if code is clear
-          const base = weatherInfo(H.weathercode[i], dayFlag);
-          const clearCodes = [0, 1];
-          hwi = clearCodes.includes(H.weathercode[i])
-            ? { icon: '⛅', text: 'Mainly clear, small chance of rain' }
-            : base;
-        } else {
-          hwi = weatherInfo(H.weathercode[i], dayFlag);
-        }
+        // Resolve hourly icon via shared function — same logic everywhere
+        const hwi = resolveIcon(prob, H.weathercode[i], dayFlag);
         return `<div class="hour-card ${isNow ? 'now' : ''}">
           <div class="hour-time">${isNow ? 'Now' : (t.getHours() + ':00')}</div>
           <div class="hour-icon">${hwi.icon}</div>
@@ -1357,33 +1339,39 @@ function renderTodayView(data, loc) {
 
 function render7DayView(data, loc) {
   const D = data.daily;
+  const H = data.hourly;
   const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const today = new Date();
+  const currentHour = today.getHours();
+
+  // For Today's row, use the current hour's hourly data so it matches the main view
+  const currentHourIdx = H.time.findIndex(t => {
+    const th = new Date(t);
+    return th.getDate() === today.getDate() && th.getHours() === currentHour;
+  });
+  const ci = currentHourIdx >= 0 ? currentHourIdx : 0;
+  const nowCode = H.weathercode[ci];
+  const nowProb = H.precipitation_probability[ci] || 0;
+  const nowIsDay = H.is_day[ci];
 
   const rows = D.time.map((t, i) => {
     const date = new Date(t);
     const isToday = date.toDateString() === today.toDateString();
     const dayLabel = isToday ? 'Today' : days[date.getDay()];
-    const prob = D.precipitation_probability_max[i] || 0;
-    const code = D.weathercode[i];
 
-    // Apply same probability override as hourly and main icon —
-    // max daily rain probability overrides the weather code icon when significant
-    let wi;
-    if (prob >= 80) {
-      wi = { icon: '🌧', text: 'Heavy rain likely' };
-    } else if (prob >= 60) {
-      wi = { icon: '🌧', text: 'Rain expected' };
-    } else if (prob >= 40) {
-      wi = { icon: '🌦', text: 'Showers possible' };
-    } else if (prob >= 20) {
-      const base = weatherInfo(code, true);
-      wi = [0,1].includes(code)
-        ? { icon: '⛅', text: 'Mainly clear, chance of rain' }
-        : base;
+    // Today: use current hour's code + prob — identical inputs to the main view icon
+    // Future days: use daily max probability as the day summary
+    let wi, prob, code, isDay;
+    if (isToday) {
+      prob = nowProb;
+      code = nowCode;
+      isDay = nowIsDay;
     } else {
-      wi = weatherInfo(code, true);
+      prob = D.precipitation_probability_max[i] || 0;
+      code = D.weathercode[i];
+      isDay = true;
     }
+    wi = resolveIcon(prob, code, isDay);
 
     return `<div class="daily-row">
       <div class="daily-day">${dayLabel}</div>
