@@ -1364,12 +1364,32 @@ function render7DayView(data, loc) {
     const date = new Date(t);
     const isToday = date.toDateString() === today.toDateString();
     const dayLabel = isToday ? 'Today' : days[date.getDay()];
-    const wi = weatherInfo(D.weathercode[i]);
+    const prob = D.precipitation_probability_max[i] || 0;
+    const code = D.weathercode[i];
+
+    // Apply same probability override as hourly and main icon —
+    // max daily rain probability overrides the weather code icon when significant
+    let wi;
+    if (prob >= 80) {
+      wi = { icon: '🌧', text: 'Heavy rain likely' };
+    } else if (prob >= 60) {
+      wi = { icon: '🌧', text: 'Rain expected' };
+    } else if (prob >= 40) {
+      wi = { icon: '🌦', text: 'Showers possible' };
+    } else if (prob >= 20) {
+      const base = weatherInfo(code, true);
+      wi = [0,1].includes(code)
+        ? { icon: '⛅', text: 'Mainly clear, chance of rain' }
+        : base;
+    } else {
+      wi = weatherInfo(code, true);
+    }
+
     return `<div class="daily-row">
       <div class="daily-day">${dayLabel}</div>
       <div class="daily-icon">${wi.icon}</div>
       <div class="daily-desc">${wi.text}</div>
-      <div class="daily-rain">💧${D.precipitation_probability_max[i] || 0}%</div>
+      <div class="daily-rain">💧${prob}%</div>
       <div class="daily-temps">
         <span class="daily-hi">${Math.round(D.temperature_2m_max[i])}°</span>
         <span class="daily-lo"> / ${Math.round(D.temperature_2m_min[i])}°</span>
