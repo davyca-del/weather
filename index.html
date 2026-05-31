@@ -833,15 +833,42 @@ function saveLocations() {
 }
 
 // ─── Shared icon resolver — single source of truth for all views ────────────────
+// Strategy:
+//   High prob (≥60%)  → rain icon wins regardless of code
+//   Medium prob       → blend: rain icon if code is clear, else trust the code
+//   Low prob (<20%)   → code wins — reflects cloud cover, fog, snow etc accurately
 function resolveIcon(prob, code, isDay = true) {
-  if (prob >= 80) return { icon: '🌧', text: 'Heavy rain likely' };
-  if (prob >= 60) return { icon: '🌧', text: 'Rain expected' };
-  if (prob >= 40) return { icon: '🌦', text: 'Showers possible' };
-  if (prob >= 20) {
-    const base = weatherInfo(code, isDay);
-    return [0,1].includes(code) ? { icon: '⛅', text: 'Mainly clear, chance of rain' } : base;
+  const base = weatherInfo(code, isDay);
+  const clearCodes = [0, 1];
+  const mostlyClearCodes = [0, 1, 2];
+
+  if (prob >= 80) {
+    // Definitely raining — override everything
+    return { icon: '🌧', text: 'Heavy rain likely' };
   }
-  return weatherInfo(code, isDay);
+  if (prob >= 60) {
+    // Rain expected — but if code says heavy/thunder, respect that
+    if (code >= 95) return { icon: '⛈', text: 'Thunderstorms' };
+    return { icon: '🌧', text: 'Rain expected' };
+  }
+  if (prob >= 40) {
+    // Showers possible — if code says overcast or worse, keep that context
+    if (code >= 95) return { icon: '⛈', text: 'Possible thunderstorms' };
+    if (code === 3) return { icon: '🌦', text: 'Overcast, showers possible' };
+    return { icon: '🌦', text: 'Showers possible' };
+  }
+  if (prob >= 20) {
+    // Small chance of rain — only override if code says clear/sunny
+    // If it's overcast or cloudy, the code is more informative than the rain chance
+    if (clearCodes.includes(code)) {
+      return { icon: '⛅', text: 'Mainly clear, chance of rain' };
+    }
+    // Overcast with small rain chance — trust the overcast code
+    return base;
+  }
+  // Low/no rain chance — weather code is the best signal
+  // This correctly shows ☁️ overcast, 🌤 mainly clear, ☀️ clear, 🌫 fog etc
+  return base;
 }
 
 // ─── Weather codes ────────────────────────────────────────────────────────
@@ -1354,30 +1381,114 @@ function render7DayView(data, loc) {
   const nowProb = H.precipitation_probability[ci] || 0;
   const nowIsDay = H.is_day[ci];
 
+  // Pre-index hourly data by date string for fast lookup
+  const hourlyByDay = {};
+  H.time.forEach((t, i) => {
+    const d = new Date(t).toDateString();
+    if (!hourlyByDay[d]) hourlyByDay[d] = [];
+    hourlyByDay[d].push({
+      prob: H.precipitation_probability[i] || 0,
+      code: H.weathercode[i],
+      isDay: H.is_day[i],
+      mm: H.precipitation[i] || 0
+    });
+  });
+
+  // Build a day summary from hourly slices — duration-weighted, not just peak
+  function summariseDay(slices) {
+    if (!slices || slices.length === 0) return null;
+
+    // Daytime hours only (is_day = 1) for the dominant feel
+    const daySlices = slices.filter(s => s.isDay);
+    const allSlices = daySlices.length > 0 ? daySlices : slices;
+
+    const totalHours = allSlices.length;
+
+    // Count hours in each rain band
+    const hoursHeavy  = allSlices.filter(s => s.prob >= 70).length; // ≥70% = properly rainy
+    const hoursMed    = allSlices.filter(s => s.prob >= 40 && s.prob < 70).length;
+    const hoursLight  = allSlices.filter(s => s.prob >= 20 && s.prob < 40).length;
+    const peakProb    = Math.max(...allSlices.map(s => s.prob));
+    const totalMm     = allSlices.reduce((s, h) => s + h.mm, 0);
+
+    // Dominant cloud/condition code (most common across daytime hours)
+    const codeCounts = {};
+    allSlices.forEach(s => { codeCounts[s.code] = (codeCounts[s.code] || 0) + 1; });
+    const dominantCode = parseInt(Object.entries(codeCounts).sort((a,b) => b[1]-a[1])[0][0]);
+
+    // Classify the day by duration + intensity
+    // "sustained" = majority of daylight hours affected
+    const sustainedHeavy  = hoursHeavy  >= Math.ceil(totalHours * 0.4); // 40%+ hours heavy
+    const sustainedMed    = (hoursHeavy + hoursMed) >= Math.ceil(totalHours * 0.4);
+    const anyHeavy        = hoursHeavy >= 2;  // at least 2hrs heavy rain = mention it
+    const anyMed          = (hoursHeavy + hoursMed) >= 2;
+    const passingShower   = (hoursHeavy + hoursMed) <= 2 && peakProb >= 40;
+
+    let wi;
+
+    if (peakProb >= 80 && sustainedHeavy) {
+      wi = { icon: '🌧', text: 'Heavy rain most of the day' };
+    } else if (peakProb >= 80 && anyHeavy) {
+      wi = { icon: '🌧', text: 'Heavy showers likely' };
+    } else if (peakProb >= 60 && sustainedMed) {
+      wi = { icon: '🌧', text: 'Rain for much of the day' };
+    } else if (peakProb >= 60 && anyMed) {
+      wi = { icon: '🌦', text: 'Periods of rain' };
+    } else if (peakProb >= 40 && passingShower) {
+      wi = { icon: '🌦', text: 'Passing shower possible' };
+    } else if (peakProb >= 40) {
+      wi = { icon: '🌦', text: 'Showers possible' };
+    } else if (peakProb >= 20) {
+      // Small rain chance — cloud cover tells the story
+      const base = weatherInfo(dominantCode, true);
+      wi = [0,1].includes(dominantCode)
+        ? { icon: '⛅', text: 'Mainly clear, slight chance of rain' }
+        : base;
+    } else {
+      // Dry day — dominant code is the honest summary
+      wi = weatherInfo(dominantCode, true);
+    }
+
+    // Thunderstorm override regardless of probability
+    if (allSlices.some(s => s.code >= 95)) {
+      wi = peakProb >= 60
+        ? { icon: '⛈', text: 'Thunderstorms likely' }
+        : { icon: '⛈', text: 'Thunderstorms possible' };
+    }
+
+    return { wi, peakProb, totalMm };
+  }
+
   const rows = D.time.map((t, i) => {
     const date = new Date(t);
     const isToday = date.toDateString() === today.toDateString();
     const dayLabel = isToday ? 'Today' : days[date.getDay()];
 
-    // Today: use current hour's code + prob — identical inputs to the main view icon
-    // Future days: use daily max probability as the day summary
-    let wi, prob, code, isDay;
+    let wi, displayProb;
+
     if (isToday) {
-      prob = nowProb;
-      code = nowCode;
-      isDay = nowIsDay;
+      // Today — use current hour so it matches main view exactly
+      wi = resolveIcon(nowProb, nowCode, nowIsDay);
+      displayProb = nowProb;
     } else {
-      prob = D.precipitation_probability_max[i] || 0;
-      code = D.weathercode[i];
-      isDay = true;
+      // Future days — use hourly duration-weighted summary
+      const slices = hourlyByDay[date.toDateString()];
+      const summary = summariseDay(slices);
+      if (summary) {
+        wi = summary.wi;
+        displayProb = summary.peakProb;
+      } else {
+        // Fallback to daily API data if hourly not available
+        displayProb = D.precipitation_probability_max[i] || 0;
+        wi = resolveIcon(displayProb, D.weathercode[i], true);
+      }
     }
-    wi = resolveIcon(prob, code, isDay);
 
     return `<div class="daily-row">
       <div class="daily-day">${dayLabel}</div>
       <div class="daily-icon">${wi.icon}</div>
       <div class="daily-desc">${wi.text}</div>
-      <div class="daily-rain">💧${prob}%</div>
+      <div class="daily-rain">💧${displayProb}%</div>
       <div class="daily-temps">
         <span class="daily-hi">${Math.round(D.temperature_2m_max[i])}°</span>
         <span class="daily-lo"> / ${Math.round(D.temperature_2m_min[i])}°</span>
