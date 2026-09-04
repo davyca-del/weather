@@ -1013,8 +1013,7 @@ function periodLabel(hour) {
 
 function getMorningBrief(data, locName) {
   const { tempMax, tempMin, totalRain, maxWind, hourlySlices } = data;
-  const now = new Date();
-  const hour = now.getHours();
+  const hour = data.localHour; // location-local hour passed in from renderTodayView
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
 
   let brief = `${greeting}! `;
@@ -1197,20 +1196,28 @@ function renderLocationChips() {
 }
 
 function renderTodayView(data, loc) {
-  const now = new Date();
-  const hour = now.getHours();
   const H = data.hourly;
   const D = data.daily;
 
-  // Find current hour index
-  const currentHourIdx = H.time.findIndex(t => {
-    const th = new Date(t);
-    return th.getDate() === now.getDate() && th.getHours() === hour;
-  });
+  // The API returns times in the LOCATION's local timezone (timezone=auto).
+  // utc_offset_seconds tells us exactly how far that is from UTC.
+  // Use it to find "now" in the location's local time — never use browser local time
+  // for hour matching, as the browser may be in a completely different timezone.
+  function apiDate(t) { return t.slice(0, 10); }
+  function apiHour(t) { return parseInt(t.slice(11, 13)); }
 
-  const ci = currentHourIdx >= 0 ? currentHourIdx : 0;
+  const utcOffsetMs = (data.utc_offset_seconds || 0) * 1000;
+  const nowLocalMs = Date.now() + utcOffsetMs; // current ms in location's local time
+  const nowLocal = new Date(nowLocalMs);
+  const nowLocalHour = nowLocal.getUTCHours();   // use UTC getters on shifted time
+  const nowLocalDate = nowLocal.toISOString().slice(0, 10);
+
+  // Find the hourly index matching the current local hour at the location
+  let ci = H.time.findIndex(t => apiDate(t) === nowLocalDate && apiHour(t) === nowLocalHour);
+  if (ci < 0) ci = 0;
+
   const code = H.weathercode[ci];
-  const isDay = H.is_day[ci];
+  const isDay = H.is_day[ci]; // authoritative from API — never derive from browser clock
   const rainProb = H.precipitation_probability[ci];
 
   // Resolve main icon via shared function — single source of truth
@@ -1222,9 +1229,10 @@ function renderTodayView(data, loc) {
   const windDir = H.winddirection_10m[ci];
   const windGust = Math.round(H.windgusts_10m[ci]);
 
-  // Summary stats for today
-  const todayIdxs = H.time.map((t,i) => ({ t: new Date(t), i }))
-    .filter(({ t }) => t.getDate() === now.getDate());
+  // Today's entries — matched by location-local date string
+  const todayIdxs = H.time.map((t, i) => ({ t, i }))
+    .filter(({ t }) => apiDate(t) === nowLocalDate)
+    .map(({ t, i }) => ({ t: { getHours: () => apiHour(t) }, i }));
 
   const tempMax = Math.max(...todayIdxs.map(({ i }) => H.temperature_2m[i]));
   const tempMin = Math.min(...todayIdxs.map(({ i }) => H.temperature_2m[i]));
@@ -1251,7 +1259,7 @@ function renderTodayView(data, loc) {
     mm: H.precipitation[i] || 0,
     temp: H.temperature_2m[i]
   }));
-  const brief = getMorningBrief({ tempMax, tempMin, totalRain, maxWind, hourlySlices }, loc.name);
+  const brief = getMorningBrief({ tempMax, tempMin, totalRain, maxWind, hourlySlices, localHour: nowLocalHour }, loc.name);
 
   // Hourly — show remaining hours of today + first few tomorrow
   const displayHours = H.time.map((t, i) => ({ t: new Date(t), i }))
@@ -1372,12 +1380,15 @@ function render7DayView(data, loc) {
   const today = new Date();
   const currentHour = today.getHours();
 
-  // For Today's row, use the current hour's hourly data so it matches the main view
-  const currentHourIdx = H.time.findIndex(t => {
-    const th = new Date(t);
-    return th.getDate() === today.getDate() && th.getHours() === currentHour;
-  });
-  const ci = currentHourIdx >= 0 ? currentHourIdx : 0;
+  // Use utc_offset_seconds to find current local time at the location
+  function apiDate7(t) { return t.slice(0, 10); }
+  function apiHour7(t) { return parseInt(t.slice(11, 13)); }
+  const utcOffsetMs7 = (data.utc_offset_seconds || 0) * 1000;
+  const nowLocal7 = new Date(Date.now() + utcOffsetMs7);
+  const nowLocalHour7 = nowLocal7.getUTCHours();
+  const nowLocalDate7 = nowLocal7.toISOString().slice(0, 10);
+  let ci = H.time.findIndex(t => apiDate7(t) === nowLocalDate7 && apiHour7(t) === nowLocalHour7);
+  if (ci < 0) ci = 0;
   const nowCode = H.weathercode[ci];
   const nowProb = H.precipitation_probability[ci] || 0;
   const nowIsDay = H.is_day[ci];
@@ -1385,7 +1396,7 @@ function render7DayView(data, loc) {
   // Pre-index hourly data by date string for fast lookup
   const hourlyByDay = {};
   H.time.forEach((t, i) => {
-    const d = new Date(t).toDateString();
+    const d = apiDate7(t); // use location-local date string, not browser-tz Date
     if (!hourlyByDay[d]) hourlyByDay[d] = [];
     hourlyByDay[d].push({
       prob: H.precipitation_probability[i] || 0,
@@ -1462,7 +1473,7 @@ function render7DayView(data, loc) {
 
   const rows = D.time.map((t, i) => {
     const date = new Date(t);
-    const isToday = date.toDateString() === today.toDateString();
+    const isToday = apiDate7(t) === nowLocalDate7;
     const dayLabel = isToday ? 'Today' : days[date.getDay()];
 
     let wi, displayProb;
@@ -1473,7 +1484,7 @@ function render7DayView(data, loc) {
       displayProb = nowProb;
     } else {
       // Future days — use hourly duration-weighted summary
-      const slices = hourlyByDay[date.toDateString()];
+      const slices = hourlyByDay[apiDate7(t)];
       const summary = summariseDay(slices);
       if (summary) {
         wi = summary.wi;
