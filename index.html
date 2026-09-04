@@ -1111,7 +1111,8 @@ function getMorningBrief(data, locName) {
     } else {
       brief += `A few showers still possible in ${locName} — not a washout, keep an eye on it. `;
     }
-  } else if (worstSeverity >= 1.5) {
+  } else if (worstSeverity >= 1.5 && scored.some(s => [51,53,55].includes(s.code))) {
+    // Only say drizzly if there are actual drizzle weather codes, not just low probability
     brief += `Staying damp and drizzly in ${locName}${nearlyDone ? ' into the evening' : ' for the rest of the day'}. `;
   } else if (worstSeverity >= 1) {
     brief += `Overcast${nearlyDone ? ' to end the day' : ' for the rest of the day'} in ${locName}, but staying dry. `;
@@ -1167,7 +1168,7 @@ async function fetchWeather(lat, lon) {
     `&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,weathercode,windspeed_10m,windgusts_10m,winddirection_10m,is_day` +
     `&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max,precipitation_probability_max` +
     `&wind_speed_unit=mph` +
-    `&timezone=Europe%2FLondon` +
+    `&timezone=auto` +
     `&forecast_days=7`;
 
   const res = await fetch(url);
