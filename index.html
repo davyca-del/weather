@@ -1113,11 +1113,22 @@ function getMorningBrief(data, locName) {
   } else if (worstSeverity >= 1.5 && scored.some(s => [51,53,55].includes(s.code))) {
     // Only say drizzly if there are actual drizzle weather codes, not just low probability
     brief += `Staying damp and drizzly in ${locName}${nearlyDone ? ' into the evening' : ' for the rest of the day'}. `;
-  } else if (worstSeverity >= 1) {
+  } else if (worstSeverity >= 1 && nowSev >= 1) {
+    // Currently overcast AND staying that way — say so
     brief += `Overcast${nearlyDone ? ' to end the day' : ' for the rest of the day'} in ${locName}, but staying dry. `;
+  } else if (worstSeverity >= 1 && nowSev < 1) {
+    // Currently clear/pleasant but may cloud over later — lead with the good news
+    const cloudLabel = nearlyDone ? 'this evening' : (hour < 12 ? 'later today' : 'later this afternoon');
+    brief += `${nowCode <= 1 ? 'Lovely and clear' : 'Pleasant'} for now in ${locName}${worstSeverity >= 1 ? `, clouding over ${cloudLabel}` : ''}. `;
   } else {
+    // Clear and dry — describe with appropriate enthusiasm for the temperature
+    const nowTemp = remainingHours[0]?.temp || tempMax || 20;
     if (hour >= 17) {
-      brief += `A pleasant evening ahead in ${locName} — clear and settled. `;
+      brief += `A ${nowTemp >= 25 ? 'warm' : 'pleasant'} evening ahead in ${locName} — clear and settled. `;
+    } else if (nowTemp >= 30) {
+      brief += `Scorching ${nowCode === 0 ? 'sunshine' : 'conditions'} in ${locName} — it's a beautiful${hour >= 12 ? ' afternoon' : ' day'}. `;
+    } else if (nowTemp >= 22) {
+      brief += `Lovely ${nowCode === 0 ? 'sunshine' : 'conditions'} in ${locName} — a proper ${hour >= 12 ? 'afternoon' : 'day'} for it. `;
     } else {
       brief += `Looking ${nowCode === 0 ? 'gloriously clear' : 'pleasantly settled'} for the ${hour >= 12 ? 'afternoon' : 'rest of the day'} in ${locName}. `;
     }
@@ -1153,7 +1164,67 @@ function getMorningBrief(data, locName) {
     else if (worstSeverity < 1.5 && !clearing) brief += `No significant rain expected — enjoy it.`;
   }
 
+  // ── Jimmy Carr closer ────────────────────────────────────────────────
+  brief += ' ' + getJimmyCarrQuip({ worstSeverity, totalRain, maxWind, tempMax: showTempMax, tempMin: showTempMin, locName, hour });
+
   return brief;
+}
+
+function getJimmyCarrQuip({ worstSeverity, totalRain, maxWind, tempMax, tempMin, locName, hour }) {
+  const hot = tempMax >= 30;
+  const cold = tempMax < 5;
+  const windy = maxWind > 25;
+  const rainy = worstSeverity >= 3;
+  const stormy = worstSeverity >= 5;
+  const mild = worstSeverity < 1 && !hot && !cold;
+
+  const quips = {
+    stormy: [
+      "There's a thunderstorm forecast. On the bright side, your insurance claim will be straightforward.",
+      "Thunderstorms ahead. Nature's way of reminding you who's actually in charge.",
+      "Lightning expected. Statistically, you'll be fine. Statistically.",
+    ],
+    rainy: [
+      "Heavy rain on the way. The British call this 'summer'. In Florida, it's apparently a surprise.",
+      "It's going to be very wet. Look on the bright side — at least you won't have to water the garden.",
+      "Significant rain expected. Perfect weather for staying in and questioning your life choices.",
+      "Bring a waterproof. Or don't — and spend the afternoon looking like you lost a fight with a garden hose.",
+    ],
+    hot: [
+      `${tempMax}°C. It's not the heat that gets you, it's the humidity. Actually, it's definitely the heat.`,
+      "It's roasting out there. Stay hydrated. Or don't — natural selection is a valid process.",
+      `${Math.round(tempMax)}°C and sunny. SPF 50. Minimum. I'm not your doctor, but also — yes I am.`,
+      "Scorching conditions. The kind of day where your car becomes an oven and your steering wheel tries to kill you.",
+    ],
+    cold: [
+      "Bitter cold today. The sort of weather that makes you question every life decision that led you here.",
+      "It's absolutely freezing. Layers. Many of them. All of them.",
+      "Cold enough to see your breath. And cold enough to regret everything.",
+    ],
+    windy: [
+      "Strong winds expected. Hold on to anything you're not prepared to chase down the street.",
+      "It's going to be blustery. Great weather for finding out which bits of your garden furniture you actually care about.",
+      "High winds today. Your umbrella is not going to make it. I'm sorry for your loss.",
+    ],
+    mild: [
+      "Perfectly pleasant. No drama. Statistically the most suspicious kind of British weather.",
+      "Mild and unremarkable — the weather equivalent of a firm handshake.",
+      "Conditions are fine. Nothing to report. Which, frankly, is the most unsettling forecast of all.",
+      "Good weather. Enjoy it. It won't last — it never does.",
+    ],
+  };
+
+  let pool;
+  if (stormy) pool = quips.stormy;
+  else if (rainy) pool = quips.rainy;
+  else if (hot) pool = quips.hot;
+  else if (cold) pool = quips.cold;
+  else if (windy) pool = quips.windy;
+  else pool = quips.mild;
+
+  // Pick deterministically based on date so it doesn't change on every refresh
+  const seed = new Date().getDate() + new Date().getMonth() * 31;
+  return pool[seed % pool.length];
 }
 
 // ─── Fetch weather ────────────────────────────────────────────────────────
@@ -1496,7 +1567,9 @@ function render7DayView(data, loc) {
       }
     }
 
-    return `<div class="daily-row">
+    const dateStr = apiDate7(t);
+    const dayNum = i; // index into D arrays
+    return `<div class="daily-row tappable" data-date="${dateStr}" data-dayidx="${dayNum}" style="cursor:pointer;">
       <div class="daily-day">${dayLabel}</div>
       <div class="daily-icon">${wi.icon}</div>
       <div class="daily-desc">${wi.text}</div>
@@ -1505,6 +1578,7 @@ function render7DayView(data, loc) {
         <span class="daily-hi">${Math.round(D.temperature_2m_max[i])}°</span>
         <span class="daily-lo"> / ${Math.round(D.temperature_2m_min[i])}°</span>
       </div>
+      <div style="color:var(--text-dim);font-size:16px;margin-left:4px;">›</div>
     </div>`;
   }).join('');
 
@@ -1517,7 +1591,196 @@ function render7DayView(data, loc) {
     </div>
     <div class="refresh-time">Open-Meteo ECMWF · ${loc.name}</div>
   `;
+
+  // Attach tap handlers for drill-through
+  document.querySelectorAll('.daily-row.tappable').forEach(row => {
+    row.addEventListener('click', () => {
+      const dateStr = row.dataset.date;
+      const dayIdx = parseInt(row.dataset.dayidx);
+      renderDayDetailView(lastWeatherData, lastWeatherLoc, dateStr, dayIdx);
+    });
+  });
 }
+
+// ─── Day detail drill-through view ───────────────────────────────────────
+function renderDayDetailView(data, loc, dateStr, dayIdx) {
+  currentView = 'daydetail';
+  const H = data.hourly;
+  const D = data.daily;
+
+  function apiDate7(t) { return t.slice(0, 10); }
+  function apiHour7(t) { return parseInt(t.slice(11, 13)); }
+
+  const utcOffsetMs = (data.utc_offset_seconds || 0) * 1000;
+  const nowLocalDate = new Date(Date.now() + utcOffsetMs).toISOString().slice(0, 10);
+  const isToday = dateStr === nowLocalDate;
+
+  // Get all hourly entries for this date
+  const dayHours = H.time.map((t, i) => ({ t, i, hour: apiHour7(t) }))
+    .filter(({ t }) => apiDate7(t) === dateStr);
+
+  if (dayHours.length === 0) {
+    document.getElementById('weatherContent').innerHTML = `<div class="error-card"><h3>No data</h3><p>Hourly data not available for this date.</p></div>`;
+    return;
+  }
+
+  // Day summary stats
+  const tempMax = Math.max(...dayHours.map(({ i }) => H.temperature_2m[i]));
+  const tempMin = Math.min(...dayHours.map(({ i }) => H.temperature_2m[i]));
+  const totalRain = dayHours.reduce((s, { i }) => s + (H.precipitation[i] || 0), 0);
+  const maxWind = Math.max(...dayHours.map(({ i }) => H.windspeed_10m[i]));
+  const peakProb = Math.max(...dayHours.map(({ i }) => H.precipitation_probability[i] || 0));
+
+  // Representative hour — midday or first daytime hour
+  const middayHour = dayHours.find(({ hour }) => hour === 13) ||
+                     dayHours.find(({ i }) => H.is_day[i]) ||
+                     dayHours[Math.floor(dayHours.length / 2)];
+  const ri = middayHour.i;
+
+  const repCode = H.weathercode[ri];
+  const repProb = H.precipitation_probability[ri] || 0;
+  const repIsDay = H.is_day[ri];
+  const wi = resolveIcon(repProb, repCode, repIsDay);
+
+  // Day label
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const dateObj = new Date(dateStr + 'T12:00:00Z');
+  const dayName = isToday ? 'Today' : days[dateObj.getUTCDay()];
+  const dateLabel = dateObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' });
+
+  // Confidence banner for days 4+
+  const daysAhead = dayIdx;
+  const confidenceBanner = daysAhead >= 4
+    ? `<div style="margin:0 16px 12px;padding:10px 16px;background:rgba(244,169,66,0.08);border:1px solid rgba(244,169,66,0.2);border-radius:14px;font-size:12px;color:var(--accent);">
+        ⚠️ ${daysAhead >= 6 ? 'Low' : 'Moderate'} confidence — ${daysAhead >= 6 ? '6-7 day forecasts are indicative only' : 'timing of rain may shift by a day or so'}
+      </div>`
+    : '';
+
+  // Clothing advice
+  const wetCodes = [51,53,55,61,63,65,71,73,75,77,80,81,82,85,86,95,96,99];
+  const anyWetCode = dayHours.some(({ i }) => wetCodes.includes(H.weathercode[i]));
+  const clothing = getClothing({ feelsLike: Math.round(H.apparent_temperature[ri]), totalRainMm: totalRain, anyWetCode, wind: maxWind });
+
+  // Hourly strip — daytime hours (is_day=1), or all if short day
+  const displayHours = dayHours.filter(({ i }) => H.is_day[i]);
+  const hoursToShow = displayHours.length >= 4 ? displayHours : dayHours;
+
+  // Rain chart — all hours of the day
+  const maxBarProb = Math.max(...dayHours.map(({ i }) => H.precipitation_probability[i] || 0), 1);
+
+  // Wind — use midday representative
+  const windSpeed = Math.round(H.windspeed_10m[ri]);
+  const windDir = H.winddirection_10m[ri];
+  const windGust = Math.round(H.windgusts_10m[ri]);
+
+  const html = `
+    <!-- Back button -->
+    <div style="padding:16px 24px 8px;display:flex;align-items:center;gap:12px;animation:fadeUp 0.3s ease both;">
+      <div id="backBtn" style="width:36px;height:36px;border-radius:10px;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;color:var(--text-muted);">‹</div>
+      <div>
+        <div style="font-family:'DM Serif Display',serif;font-size:20px;color:var(--text);line-height:1;">${dayName}</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-top:2px;">${dateLabel} · ${loc.name}</div>
+      </div>
+    </div>
+
+    ${confidenceBanner}
+
+    <!-- Main card -->
+    <div class="main-card">
+      <div class="current-temp">${Math.round(H.temperature_2m[ri])}<sup>°C</sup></div>
+      <div class="condition-row">
+        <span class="condition-icon">${wi.icon}</span>
+        <span class="condition-text">${wi.text}</span>
+      </div>
+      <div class="weather-stats">
+        <div class="stat-box">
+          <div class="stat-label">High / Low</div>
+          <div class="stat-value">${Math.round(tempMax)}° / ${Math.round(tempMin)}°</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Peak rain</div>
+          <div class="stat-value rain">${peakProb}%</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Max wind</div>
+          <div class="stat-value wind">${Math.round(maxWind)}mph</div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-dim)">Total rain ${totalRain.toFixed(1)}mm · Feels like ${Math.round(H.apparent_temperature[ri])}°</div>
+    </div>
+
+    <!-- Clothing -->
+    <div class="clothing-card">
+      <div class="clothing-title">What to wear</div>
+      <div class="clothing-items">
+        ${clothing.essential.map(c => `<span class="clothing-tag essential">⚡ ${c}</span>`).join('')}
+        ${clothing.items.map(c => `<span class="clothing-tag">${c}</span>`).join('')}
+      </div>
+    </div>
+
+    <!-- Hourly strip -->
+    <div class="section-title">Hourly forecast</div>
+    <div class="hourly-strip">
+      ${hoursToShow.map(({ i, hour }) => {
+        const prob = H.precipitation_probability[i] || 0;
+        const hwi = resolveIcon(prob, H.weathercode[i], H.is_day[i]);
+        return `<div class="hour-card">
+          <div class="hour-time">${hour}:00</div>
+          <div class="hour-icon">${hwi.icon}</div>
+          <div class="hour-temp">${Math.round(H.temperature_2m[i])}°</div>
+          <div class="hour-rain">${prob}%</div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <!-- Wind -->
+    <div class="wind-card">
+      <div class="section-title" style="padding:0 0 12px;">Wind</div>
+      <div class="wind-row">
+        <div class="wind-compass">
+          <span class="wind-arrow" style="transform:rotate(${windDir}deg)">↑</span>
+        </div>
+        <div class="wind-details">
+          <div class="wind-speed">${windSpeed}<span>mph</span></div>
+          <div class="wind-dir">${windDirText(windDir)} — ${beaufortDesc(windSpeed * 0.447)}</div>
+          <div class="wind-gust">Gusts to ${windGust}mph</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rain chart -->
+    <div class="rain-chart">
+      <div class="section-title" style="padding:0 0 0;">Rain probability — all day</div>
+      <div class="rain-bars">
+        ${dayHours.map(({ i, hour }) => {
+          const prob = H.precipitation_probability[i] || 0;
+          const barH = Math.max(Math.round((prob / 100) * 52), 3);
+          const color = prob >= 70 ? 'rgba(92,184,228,0.9)' : prob >= 40 ? 'rgba(92,184,228,0.65)' : 'rgba(92,184,228,0.35)';
+          return `<div class="rain-bar-wrap">
+            <div class="rain-bar" style="height:${barH}px;background:${color}"></div>
+            <div class="rain-bar-label">${hour}h</div>
+            <div class="rain-bar-label" style="color:var(--text-muted);font-size:10px">${prob}%</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <div class="refresh-time">Open-Meteo ECMWF · tap ‹ to go back</div>
+  `;
+
+  document.getElementById('weatherContent').innerHTML = html;
+
+  // Back button
+  document.getElementById('backBtn').addEventListener('click', () => {
+    currentView = '7day';
+    document.getElementById('nav7day').classList.add('active');
+    document.getElementById('navToday').classList.remove('active');
+    render7DayView(lastWeatherData, lastWeatherLoc);
+  });
+}
+
+let lastWeatherData = null;
+let lastWeatherLoc = null;
 
 async function loadWeather() {
   if (activeIdx >= locations.length) activeIdx = 0;
@@ -1531,8 +1794,11 @@ async function loadWeather() {
 
   try {
     const data = await fetchWeather(loc.lat, loc.lon);
+    lastWeatherData = data;
+    lastWeatherLoc = loc;
     if (currentView === 'today') renderTodayView(data, loc);
-    else render7DayView(data, loc);
+    else if (currentView === '7day') render7DayView(data, loc);
+    else if (currentView === 'daydetail') render7DayView(data, loc); // fallback
   } catch (err) {
     document.getElementById('weatherContent').innerHTML = `
       <div class="error-card">
