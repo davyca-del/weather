@@ -1013,12 +1013,11 @@ function periodLabel(hour) {
 
 function getMorningBrief(data, locName) {
   const { tempMax, tempMin, totalRain, maxWind, hourlySlices } = data;
-  const hour = data.localHour; // location-local hour passed in from renderTodayView
+  const hour = data.localHour;
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
 
   let brief = `${greeting}! `;
 
-  // All hours of today (for past context) and remaining hours
   const remainingHours = hourlySlices.filter(s => s.hour >= hour);
   const pastHours = hourlySlices.filter(s => s.hour < hour);
 
@@ -1027,128 +1026,117 @@ function getMorningBrief(data, locName) {
     return brief;
   }
 
-  // Score remaining hours
   const scored = remainingHours.map(s => ({ ...s, sev: sliceSeverity(s) }));
   const scoredPast = pastHours.map(s => ({ ...s, sev: sliceSeverity(s) }));
 
-  // Worst still to come
+  const total = scored.length;
+
+  // ── Duration counts — what fraction of remaining hours are genuinely bad ──
+  const hoursHeavyRain  = scored.filter(s => s.sev >= 4).length;  // heavy rain / ≥70% prob
+  const hoursSomeRain   = scored.filter(s => s.sev >= 2).length;  // any shower / ≥40% prob
+  const hoursDrizzle    = scored.filter(s => s.sev >= 1.5 && s.sev < 2).length;
+  const hoursOvercast   = scored.filter(s => s.sev >= 1 && s.sev < 1.5).length;
+
+  // Dominant feel: what describes the MAJORITY of remaining hours
+  const mostlyRainy     = hoursSomeRain   >= Math.ceil(total * 0.5); // >50% hours have rain
+  const partlyRainy     = hoursSomeRain   >= 2 && !mostlyRainy;      // a couple of hours
+  const briefShower     = hoursSomeRain   <= 2 && hoursHeavyRain === 0; // ≤2 hours, not heavy
+  const sustainedHeavy  = hoursHeavyRain  >= Math.ceil(total * 0.4); // 40%+ hours heavy
+
+  // Worst single hour (for deteriorating/spike warnings)
   const worst = scored.reduce((a, b) => b.sev > a.sev ? b : a, scored[0]);
   const worstSeverity = worst.sev;
-  const worstCode = worst.code;
   const worstHour = worst.hour;
   const worstLabel = periodLabel(worstHour);
 
-  // What was the worst earlier today (for "clearing" context)
+  // Past context
   const worstPast = scoredPast.length > 0
     ? scoredPast.reduce((a, b) => b.sev > a.sev ? b : a, scoredPast[0])
     : null;
   const pastWasBad = worstPast && worstPast.sev >= 3;
 
-  // Current conditions
   const nowSev = scored[0].sev;
   const nowCode = scored[0].code;
+  const nowTemp = remainingHours[0]?.temp || tempMax || 20;
 
-  // How many remaining hours are high-prob rain
-  const heavyRainHoursLeft = scored.filter(s => s.prob >= 60).length;
-  const sustainedRain = heavyRainHoursLeft >= 4;
+  const clearing = pastWasBad && nowSev < worstPast.sev - 1 && !mostlyRainy;
+  const deteriorating = worstSeverity > nowSev + 1 && worstHour > hour + 1 && hoursSomeRain >= 2;
 
-  // Is it clearing — was bad, now improving significantly?
-  const clearing = pastWasBad && nowSev < worstPast.sev - 1;
-
-  // Is worst still to come?
-  const deteriorating = worstSeverity > nowSev + 1 && worstHour > hour + 1;
-
-  // How many hours left in the day
   const hoursLeft = remainingHours.length;
   const nearlyDone = hoursLeft <= 3;
+  // ── Main condition phrase — led by DURATION not worst single hour ──────
+  if (clearing) {
+    const pastDesc = worstPast.sev >= 4 ? 'heavy rain' : 'the rain';
+    brief += `${pastDesc.charAt(0).toUpperCase() + pastDesc.slice(1)} clearing now in ${locName} — `;
+    brief += worstSeverity < 1
+      ? `drying up nicely for the ${nearlyDone ? 'evening' : 'rest of the day'}. `
+      : `staying cloudy but little further rain expected. `;
 
-  // ── Main condition phrase ──────────────────────────────────────────────
-  if (clearing && worstSeverity < 2) {
-    // Rain has passed — say so clearly
-    const pastDesc = worstPast.sev >= 4 ? 'heavy rain' : worstPast.sev >= 3 ? 'the rain' : 'the showers';
-    brief += `${pastDesc.charAt(0).toUpperCase() + pastDesc.slice(1)} is clearing now in ${locName} — `;
-    if (worstSeverity < 1) {
-      brief += `drying up for the ${nearlyDone ? 'evening' : 'rest of the day'}. `;
-    } else {
-      brief += `staying mostly cloudy but little further rain expected. `;
-    }
-  } else if (worstSeverity >= 5) {
-    if (deteriorating) {
-      brief += `Conditions look ok for now but ⚠️ thunderstorms are forecast ${worstLabel} in ${locName} — plan accordingly. `;
-    } else {
-      brief += `⚠️ Thunderstorms in the forecast for ${locName} — take care outdoors. `;
-    }
-  } else if (worstSeverity >= 4) {
-    if (sustainedRain) {
-      if (hour >= 17) {
-        brief += `A wet evening ahead in ${locName} — heavy rain continuing${nearlyDone ? ' into the night' : ' for several more hours'}. Keep that waterproof handy. `;
-      } else if (hour >= 12) {
-        brief += `Heavy rain continuing into the afternoon in ${locName} — a thoroughly wet day. Waterproof essential. `;
-      } else {
-        brief += `A thoroughly wet day ahead in ${locName} — heavy rain expected for much of the day. Waterproof essential. `;
-      }
-    } else if (deteriorating) {
-      brief += `${nowSev <= 0.5 ? 'Dry for now' : 'Conditions ok at the moment'} but heavy rain moving in ${worstLabel} in ${locName}. `;
-    } else {
-      brief += `Heavy rain in the forecast for ${locName} — waterproof essential. `;
-    }
-  } else if (worstSeverity >= 3) {
-    if (sustainedRain) {
-      if (hour >= 17) {
-        brief += `A damp evening in ${locName} — rain likely to continue for a few more hours. `;
-      } else {
-        brief += `Rain persisting in ${locName} — moderate at times${nearlyDone ? ', clearing later' : ''}. `;
-      }
-    } else if (deteriorating) {
-      brief += `Conditions ok for now but moderate rain arriving ${worstLabel} in ${locName}. `;
-    } else {
-      brief += `Some moderate rain still possible ${worstLabel} in ${locName}. `;
-    }
-  } else if (worstSeverity >= 2) {
-    if (deteriorating) {
-      brief += `Mostly ok ${hour >= 17 ? 'this evening' : 'for now'} but showers possible ${worstLabel} in ${locName}. `;
-    } else {
-      brief += `A few showers still possible in ${locName} — not a washout, keep an eye on it. `;
-    }
-  } else if (worstSeverity >= 1.5 && scored.some(s => [51,53,55].includes(s.code))) {
-    // Only say drizzly if there are actual drizzle weather codes, not just low probability
+  } else if (worstSeverity >= 5 && hoursSomeRain >= 2) {
+    brief += deteriorating
+      ? `Conditions look ok for now but ⚠️ thunderstorms are forecast ${worstLabel} in ${locName}. `
+      : `⚠️ Thunderstorms in the forecast for ${locName} — take care outdoors. `;
+
+  } else if (sustainedHeavy) {
+    brief += hour >= 17
+      ? `A wet evening in ${locName} — heavy rain set to continue for several more hours. `
+      : `A thoroughly wet day in ${locName} — heavy rain expected for most of the day. `;
+
+  } else if (mostlyRainy) {
+    brief += hour >= 17
+      ? `A rainy evening ahead in ${locName} — expect persistent rain for a few more hours. `
+      : `A rainy day in ${locName} — expect rain for much of the time. `;
+
+  } else if (deteriorating && hoursHeavyRain >= 2) {
+    brief += `${nowSev <= 0.5 ? 'Fine for now' : 'Conditions ok at the moment'} but heavy rain moving in ${worstLabel} in ${locName}. `;
+
+  } else if (deteriorating && hoursSomeRain >= 2) {
+    brief += `Mainly ${nowTemp >= 25 ? 'warm and pleasant' : 'ok'} for now in ${locName} but ${worstSeverity >= 3 ? 'rain' : 'showers'} expected ${worstLabel}. `;
+
+  } else if (briefShower && worstSeverity >= 2) {
+    // Just 1-2 hours of rain in an otherwise fine day — lead with the good news
+    const showerLabel = periodLabel(worst.hour);
+    const dominantFeel = nowTemp >= 28 ? 'Hot and sunny' : nowTemp >= 22 ? 'Warm and pleasant' : 'Largely dry';
+    brief += `${dominantFeel} in ${locName} — just a brief ${hoursHeavyRain >= 1 ? 'heavy ' : ''}shower possible ${showerLabel}. `;
+
+  } else if (partlyRainy) {
+    brief += `Mostly ${nowTemp >= 25 ? 'warm' : 'ok'} in ${locName} with a few spells of ${worstSeverity >= 3 ? 'rain' : 'light showers'} at times. `;
+
+  } else if (hoursDrizzle > 0 && scored.some(s => [51,53,55].includes(s.code))) {
     brief += `Staying damp and drizzly in ${locName}${nearlyDone ? ' into the evening' : ' for the rest of the day'}. `;
-  } else if (worstSeverity >= 1 && nowSev >= 1) {
-    // Currently overcast AND staying that way — say so
+
+  } else if (hoursOvercast >= Math.ceil(total * 0.5) && nowSev >= 1) {
     brief += `Overcast${nearlyDone ? ' to end the day' : ' for the rest of the day'} in ${locName}, but staying dry. `;
+
   } else if (worstSeverity >= 1 && nowSev < 1) {
-    // Currently clear/pleasant but may cloud over later — lead with the good news
-    const cloudLabel = nearlyDone ? 'this evening' : (hour < 12 ? 'later today' : 'later this afternoon');
-    brief += `${nowCode <= 1 ? 'Lovely and clear' : 'Pleasant'} for now in ${locName}${worstSeverity >= 1 ? `, clouding over ${cloudLabel}` : ''}. `;
+    const cloudLabel = nearlyDone ? 'this evening' : hour < 12 ? 'later today' : 'later this afternoon';
+    brief += `${nowCode <= 1 ? 'Lovely and clear' : 'Pleasant'} in ${locName} for now, clouding over ${cloudLabel}. `;
+
   } else {
-    // Clear and dry — describe with appropriate enthusiasm for the temperature
-    const nowTemp = remainingHours[0]?.temp || tempMax || 20;
     if (hour >= 17) {
-      brief += `A ${nowTemp >= 25 ? 'warm' : 'pleasant'} evening ahead in ${locName} — clear and settled. `;
+      brief += `A ${nowTemp >= 25 ? 'warm' : 'pleasant'} evening in ${locName} — clear and settled. `;
     } else if (nowTemp >= 30) {
-      brief += `Scorching ${nowCode === 0 ? 'sunshine' : 'conditions'} in ${locName} — it's a beautiful${hour >= 12 ? ' afternoon' : ' day'}. `;
+      brief += `Scorching ${nowCode === 0 ? 'sunshine' : 'conditions'} in ${locName} — beautiful${hour >= 12 ? ' afternoon' : ' day'}. `;
     } else if (nowTemp >= 22) {
       brief += `Lovely ${nowCode === 0 ? 'sunshine' : 'conditions'} in ${locName} — a proper ${hour >= 12 ? 'afternoon' : 'day'} for it. `;
     } else {
-      brief += `Looking ${nowCode === 0 ? 'gloriously clear' : 'pleasantly settled'} for the ${hour >= 12 ? 'afternoon' : 'rest of the day'} in ${locName}. `;
+      brief += `Looking ${nowCode === 0 ? 'gloriously clear' : 'pleasantly settled'} in ${locName}. `;
     }
   }
 
-  // ── Temperature (remaining range, not full day if afternoon/evening) ───
+
+  // ── Temperature ───────────────────────────────────────────────────────
   const remainingTemps = remainingHours.map(s => s.temp).filter(Boolean);
   const showTempMax = remainingTemps.length > 0 ? Math.max(...remainingTemps) : tempMax;
   const showTempMin = remainingTemps.length > 0 ? Math.min(...remainingTemps) : tempMin;
 
   if (hour < 10) {
-    // Morning — show full day range
     brief += `Temperatures from ${Math.round(tempMin)}° to ${Math.round(tempMax)}°C`;
     if (tempMax - tempMin > 9) brief += ` — quite a swing today`;
   } else if (hour >= 17) {
-    // Evening — just current feel
-    brief += `Temperature sitting around ${Math.round(showTempMin)}–${Math.round(showTempMax)}°C for the evening`;
+    brief += `Temperature around ${Math.round(showTempMin)}–${Math.round(showTempMax)}°C this evening`;
   } else {
-    // Afternoon — remaining range
-    brief += `Reaching up to ${Math.round(showTempMax)}°C this afternoon`;
+    brief += `Up to ${Math.round(showTempMax)}°C this afternoon`;
   }
   brief += `. `;
 
@@ -1156,76 +1144,17 @@ function getMorningBrief(data, locName) {
   if (maxWind > 25) brief += `Strong winds up to ${Math.round(maxWind)}mph — blustery out there. `;
   else if (maxWind > 15) brief += `A brisk breeze at up to ${Math.round(maxWind)}mph. `;
 
-  // ── Closing line — only if not already clear from above ───────────────
+  // ── Closing waterproof line — only if not already mentioned ───────────
   const alreadyMentionedWaterproof = brief.includes('aterproof');
   if (!alreadyMentionedWaterproof) {
-    if (worstSeverity >= 3) brief += `Worth keeping a waterproof to hand.`;
-    else if (worstSeverity >= 2) brief += `Maybe pack a light rain layer just in case.`;
-    else if (worstSeverity < 1.5 && !clearing) brief += `No significant rain expected — enjoy it.`;
+    if (mostlyRainy || sustainedHeavy) brief += `Waterproof essential.`;
+    else if (partlyRainy) brief += `Worth keeping a waterproof to hand.`;
+    else if (briefShower && worstSeverity >= 2) brief += `Maybe pack a light rain layer just in case.`;
   }
-
-  // ── Jimmy Carr closer ────────────────────────────────────────────────
-  brief += ' ' + getJimmyCarrQuip({ worstSeverity, totalRain, maxWind, tempMax: showTempMax, tempMin: showTempMin, locName, hour });
 
   return brief;
 }
 
-function getJimmyCarrQuip({ worstSeverity, totalRain, maxWind, tempMax, tempMin, locName, hour }) {
-  const hot = tempMax >= 30;
-  const cold = tempMax < 5;
-  const windy = maxWind > 25;
-  const rainy = worstSeverity >= 3;
-  const stormy = worstSeverity >= 5;
-  const mild = worstSeverity < 1 && !hot && !cold;
-
-  const quips = {
-    stormy: [
-      "There's a thunderstorm forecast. On the bright side, your insurance claim will be straightforward.",
-      "Thunderstorms ahead. Nature's way of reminding you who's actually in charge.",
-      "Lightning expected. Statistically, you'll be fine. Statistically.",
-    ],
-    rainy: [
-      "Heavy rain on the way. The British call this 'summer'. In Florida, it's apparently a surprise.",
-      "It's going to be very wet. Look on the bright side — at least you won't have to water the garden.",
-      "Significant rain expected. Perfect weather for staying in and questioning your life choices.",
-      "Bring a waterproof. Or don't — and spend the afternoon looking like you lost a fight with a garden hose.",
-    ],
-    hot: [
-      `${tempMax}°C. It's not the heat that gets you, it's the humidity. Actually, it's definitely the heat.`,
-      "It's roasting out there. Stay hydrated. Or don't — natural selection is a valid process.",
-      `${Math.round(tempMax)}°C and sunny. SPF 50. Minimum. I'm not your doctor, but also — yes I am.`,
-      "Scorching conditions. The kind of day where your car becomes an oven and your steering wheel tries to kill you.",
-    ],
-    cold: [
-      "Bitter cold today. The sort of weather that makes you question every life decision that led you here.",
-      "It's absolutely freezing. Layers. Many of them. All of them.",
-      "Cold enough to see your breath. And cold enough to regret everything.",
-    ],
-    windy: [
-      "Strong winds expected. Hold on to anything you're not prepared to chase down the street.",
-      "It's going to be blustery. Great weather for finding out which bits of your garden furniture you actually care about.",
-      "High winds today. Your umbrella is not going to make it. I'm sorry for your loss.",
-    ],
-    mild: [
-      "Perfectly pleasant. No drama. Statistically the most suspicious kind of British weather.",
-      "Mild and unremarkable — the weather equivalent of a firm handshake.",
-      "Conditions are fine. Nothing to report. Which, frankly, is the most unsettling forecast of all.",
-      "Good weather. Enjoy it. It won't last — it never does.",
-    ],
-  };
-
-  let pool;
-  if (stormy) pool = quips.stormy;
-  else if (rainy) pool = quips.rainy;
-  else if (hot) pool = quips.hot;
-  else if (cold) pool = quips.cold;
-  else if (windy) pool = quips.windy;
-  else pool = quips.mild;
-
-  // Pick deterministically based on date so it doesn't change on every refresh
-  const seed = new Date().getDate() + new Date().getMonth() * 31;
-  return pool[seed % pool.length];
-}
 
 // ─── Fetch weather ────────────────────────────────────────────────────────
 async function fetchWeather(lat, lon) {
