@@ -975,29 +975,40 @@ function getClothing(data) {
 
 // ─── Morning brief ────────────────────────────────────────────────────────
 function sliceSeverity(slice) {
-  // Combines weather code AND probability so high-prob days are never understated.
-  // Probability is the primary signal; code refines it.
+  // Severity score for a single hour — drives the briefing narrative.
+  // Scale: 0=clear, 0.5=partly cloudy, 1=overcast, 1.5=drizzle,
+  //        2=light showers, 3=moderate rain, 4=heavy rain, 5=thunderstorm
+  //
+  // Rules:
+  //   - Weather CODE is the primary signal for cloud/overcast/drizzle
+  //   - PROBABILITY lifts severity for rain — but only at meaningful thresholds
+  //   - prob < 30% on its own never reaches "shower" territory (sev 2)
+  //     because 10-20% is background noise, not a forecast of rain
+  //   - Actual MM is the strongest rain signal
   const { code, prob, mm } = slice;
   let sev = 0;
 
-  // Code-based floor
+  // Code-based baseline
   if (code >= 95) sev = 5;
   else if ([65,75,82,86].includes(code)) sev = 4;
   else if ([63,73,81,85].includes(code)) sev = 3;
   else if ([61,71,80].includes(code)) sev = 2;
-  else if ([51,53,55].includes(code)) sev = 1.5;
-  else if (code === 3) sev = 1;
-  else if (code === 2) sev = 0.5;
+  else if ([51,53,55].includes(code)) sev = 1.5;  // drizzle codes only
+  else if (code === 3) sev = 1;                    // overcast
+  else if (code === 2) sev = 0.5;                  // partly cloudy
 
-  // Probability override — never let a high-prob hour be called mild
+  // Probability — only meaningful at >=40%; ignore background noise <30%
   if (prob >= 80) sev = Math.max(sev, 4);
   else if (prob >= 60) sev = Math.max(sev, 3);
   else if (prob >= 40) sev = Math.max(sev, 2);
-  else if (prob >= 20) sev = Math.max(sev, 1);
+  // prob 20-39%: only nudge to 1 (overcast feel) if code is clear
+  else if (prob >= 20 && sev < 1) sev = 0.8;
+  // prob < 20%: no contribution — it's background noise
 
-  // Actual mm adds weight on top
+  // Actual mm is the most reliable rain signal
   if (mm >= 3) sev = Math.max(sev, 4);
   else if (mm >= 1) sev = Math.max(sev, 3);
+  else if (mm >= 0.3) sev = Math.max(sev, 2);
 
   return sev;
 }
@@ -1240,26 +1251,37 @@ function renderTodayView(data, loc) {
   const maxWind = Math.max(...todayIdxs.map(({ i }) => H.windspeed_10m[i]));
   const dominantCode = H.weathercode[ci];
 
-  // Clothing — use actual mm rain total + weather code, not probability %
-  // totalRain is mm across the day; rainCode flags genuinely wet weather codes
-  const wetCodes = [51,53,55,61,63,65,71,73,75,77,80,81,82,85,86,95,96,99];
-  const anyWetCode = todayIdxs.some(({ i }) => wetCodes.includes(H.weathercode[i]));
-  const clothing = getClothing({
-    temp, feelsLike: feels,
-    totalRainMm: totalRain,
-    anyWetCode,
-    wind: maxWind
-  });
+  // Build hourly slices using location-local hour (apiHour), not browser hour
+  // This is critical for cross-timezone viewing (e.g. Florida from UK browser)
+  function localApiHour(t) { return parseInt(t.slice(11, 13)); }
 
-  // Brief — build hourly slices for remaining hours of today
   const hourlySlices = todayIdxs.map(({ t, i }) => ({
-    hour: t.getHours(),
+    hour: localApiHour(H.time[i]),  // use API time string, not new Date().getHours()
     code: H.weathercode[i],
     prob: H.precipitation_probability[i] || 0,
     mm: H.precipitation[i] || 0,
     temp: H.temperature_2m[i]
   }));
-  const brief = getMorningBrief({ tempMax, tempMin, totalRain, maxWind, hourlySlices, localHour: nowLocalHour }, loc.name);
+
+  // Remaining hours only (from now forward) — used for clothing and brief
+  const remainingSlices = hourlySlices.filter(s => s.hour >= nowLocalHour);
+  const wetCodes = [51,53,55,61,63,65,71,73,75,77,80,81,82,85,86,95,96,99];
+
+  // Clothing uses remaining hours only — don't penalise for rain that already happened
+  const remainingRainMm = remainingSlices.reduce((s, h) => s + h.mm, 0);
+  const anyWetCodeAhead = remainingSlices.some(s => wetCodes.includes(s.code));
+  const remainingMaxWind = remainingSlices.length > 0
+    ? Math.max(...remainingSlices.map(s => H.windspeed_10m[todayIdxs.find(x => localApiHour(H.time[x.i]) === s.hour)?.i || ci]))
+    : maxWind;
+
+  const clothing = getClothing({
+    temp, feelsLike: feels,
+    totalRainMm: remainingRainMm,
+    anyWetCode: anyWetCodeAhead,
+    wind: remainingMaxWind
+  });
+
+  const brief = getMorningBrief({ tempMax, tempMin, totalRain: remainingRainMm, maxWind: remainingMaxWind, hourlySlices, localHour: nowLocalHour }, loc.name);
 
   // Hourly — show remaining hours of today + first few tomorrow
   const displayHours = H.time.map((t, i) => ({ t: new Date(t), i }))
